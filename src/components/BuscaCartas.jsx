@@ -1,336 +1,443 @@
-import { useState } from 'react';
-import { useLiveQuery } from 'dexie-react-hooks';
-import { Search, PlusCircle, AlertCircle, Layers, Swords, Sparkles, ChevronDown, X } from 'lucide-react';
+import { useState, useCallback, useRef } from 'react';
+import { Search, Loader2, Sparkles, SlidersHorizontal, ChevronDown, Heart, Zap, ChevronLeft, ChevronRight, X, Layers, BookOpen, BookmarkPlus } from 'lucide-react';
 import toast from 'react-hot-toast';
-import { searchCards, cardImageUrl, getCardDetail, slimCard } from '../pokeApi';
 import { db } from '../db';
+import { searchCards, getCardDetail, slimCard, cardImageUrl } from '../pokeApi';
 
-export default function BuscaCartas() {
-  const [busca, setBusca] = useState('');
-  const [cartas, setCartas] = useState([]);
-  const [carregando, setCarregando] = useState(false);
-  const [buscaRealizada, setBuscaRealizada] = useState(false);
+// Recebe tanto deckFixoId (da tela VerDeck) quanto colecaoFixaId (da tela VerColecao)
+export default function BuscaCartas({ deckFixoId, colecaoFixaId }) {
+  const [searchTerm, setSearchTerm] = useState('');
   
-  const decks = useLiveQuery(() => db.decks.toArray());
-  const [deckSelecionado, setDeckSelecionado] = useState('');
+  const [mostrarFiltros, setMostrarFiltros] = useState(false);
+  const [filtroSubtipo, setFiltroSubtipo] = useState('');
+  const [filtroHP, setFiltroHP] = useState('');
   
-  // NOVO ESTADO: Controla se o nosso menu customizado está aberto ou fechado
-  const [dropdownAberto, setDropdownAberto] = useState(false);
-  // NOVO: Estados do modal de criar deck
-  const [modalCriarAberto, setModalCriarAberto] = useState(false);
-  const [nomeNovoDeck, setNomeNovoDeck] = useState('');
+  const [results, setResults] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [hasSearched, setHasSearched] = useState(false);
+  const loadingCardsRef = useRef(new Set());
 
-  const pesquisarCartas = async (e) => {
+  // === PAGINAÇÃO ===
+  const [paginaAtual, setPaginaAtual] = useState(1);
+  const CARTAS_POR_PAGINA = 21; // Mudei para 21 porque grids maiores precisam de mais cartas por página para fechar as linhas!
+
+  // === MODAL UNIVERSAL (DECKS E COLEÇÕES) ===
+  const [modalAberto, setModalAberto] = useState(false);
+  const [cartaParaSalvar, setCartaParaSalvar] = useState(null);
+  const [abaModal, setAbaModal] = useState('decks');
+  const [listaDecks, setListaDecks] = useState([]);
+  const [listaColecoes, setListaColecoes] = useState([]);
+
+  const subtiposPokemon = [
+    { valor: '', label: 'Qualquer Versão' },
+    { valor: 'Basic', label: 'Básico (Comum)' },
+    { valor: 'Stage 1', label: 'Estágio 1' },
+    { valor: 'Stage 2', label: 'Estágio 2' },
+    { valor: 'ex', label: 'Pokémon ex (S&V)' },
+    { valor: 'EX', label: 'Pokémon EX (Antigos)' },
+    { valor: 'V', label: 'Pokémon V' },
+    { valor: 'VMAX', label: 'Pokémon VMAX' },
+    { valor: 'VSTAR', label: 'Pokémon V-ASTRO' },
+    { valor: 'GX', label: 'Pokémon GX' },
+    { valor: 'TAG TEAM', label: 'ALIADOS (Tag Team)' },
+    { valor: 'Radiant', label: 'Radiante' },
+  ];
+
+  const subtiposTreinador = [
+    { valor: 'Supporter', label: 'Apoiador' },
+    { valor: 'Item', label: 'Item' },
+    { valor: 'Stadium', label: 'Estádio' },
+    { valor: 'Pokémon Tool', label: 'Ferramenta' },
+  ];
+
+  const handleSearch = async (e) => {
     e.preventDefault();
-    if (!busca.trim()) return;
-
-    setCarregando(true);
-    setCartas([]);
-    setBuscaRealizada(true);
-
-    try {
-      const resultado = await searchCards(busca);
-      setCartas(resultado.data || []);
-      
-      if(resultado.data?.length === 0) {
-        toast('Nenhuma carta encontrada.', { icon: '🔍' });
-      }
-    } catch (erro) {
-      console.error("Erro ao buscar as cartas:", erro);
-      toast.error("Erro ao buscar as cartas. Verifique sua conexão.");
-    } finally {
-      setCarregando(false);
-    }
-  };
-
-  // OPÇÃO 2: Criar deck direto pelo Dropdown Customizado
-  const lidarComMudancaDeDeck = async (valorEscolhido) => {
-    setDropdownAberto(false);
-    
-    if (valorEscolhido === 'CRIAR_NOVO') {
-      // Abre o nosso modal bonito ao invés do prompt feio!
-      setNomeNovoDeck('');
-      setModalCriarAberto(true);
-    } else {
-      setDeckSelecionado(valorEscolhido);
-    }
-  };
-
-  // Função disparada quando clica em "Salvar" dentro do modal
-  const confirmarCriacaoDeck = async () => {
-    if (!nomeNovoDeck.trim()) {
-      toast.error("O nome do deck não pode estar vazio!");
+    if (!searchTerm.trim() && !filtroSubtipo && !filtroHP) {
+      toast.error('Digite um nome ou escolha um filtro para buscar!');
       return;
     }
+
+    setLoading(true);
+    setHasSearched(true);
+
     try {
-      const novoId = await db.decks.add({
-        nome: nomeNovoDeck,
-        dataCriacao: new Date().toLocaleDateString('pt-BR'),
-        cartas: [] 
-      });
-      setDeckSelecionado(novoId.toString());
-      toast.success(`Deck "${nomeNovoDeck}" pronto para uso!`);
-      setModalCriarAberto(false); // Fecha o modal
-    } catch (erro) {
-      toast.error("Erro ao criar o deck localmente.");
-    }
-  };
-
-  // OPÇÃO 3: Criação Automática (Se o usuário for apressado)
-  const adicionarAoDeck = async (carta) => {
-    let idDeckAlvo = deckSelecionado;
-
-    // Se ele não escolheu nada e clicou em adicionar, nós criamos pra ele!
-    if (!idDeckAlvo) {
-      try {
-        const dataHoje = new Date().toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' });
-        const nomeRapido = `Deck Rápido (${dataHoje})`;
-        
-        idDeckAlvo = await db.decks.add({
-          nome: nomeRapido,
-          dataCriacao: new Date().toLocaleDateString('pt-BR'),
-          cartas: [] 
+      const nomeLimpo = searchTerm.trim();
+      const filtros = { nome: nomeLimpo, hp: filtroHP, subtipo: filtroSubtipo };
+      
+      const res = await searchCards(filtros);
+      
+      if (res.data) {
+        const cartasOrdenadas = res.data.sort((a, b) => {
+          if (a.image && !b.image) return -1;
+          if (!a.image && b.image) return 1;
+          return 0;
         });
-        
-        // Atualiza a caixinha na tela para o novo deck criado
-        setDeckSelecionado(idDeckAlvo.toString());
-        toast(`Deck Rápido criado automaticamente!`, { icon: '⚡' });
-      } catch (erro) {
-        toast.error("Erro ao criar deck rápido.");
-        return;
-      }
-    }
 
-    // Daqui pra baixo é o salvamento normal da carta...
-    try {
-      const deckAtual = await db.decks.get(Number(idDeckAlvo));
-      
-      if (deckAtual.cartas.length >= 60) {
-        toast.error("Este deck já possui o limite de 60 cartas!");
-        return;
-      }
-
-      const toastId = toast.loading(`Buscando detalhes de ${carta.name}...`);
-      const detalhesCompletos = await getCardDetail(carta.id);
-      const novaCarta = slimCard(detalhesCompletos); 
-      
-      const categoriaApi = String(detalhesCompletos.category || '')
-        .toLowerCase()
-        .normalize('NFD')
-        .replace(/[\u0300-\u036f]/g, '');
-
-      let categoriaDefinitiva = 'Desconhecido';
-
-      if (categoriaApi.includes('pokemon')) {
-        categoriaDefinitiva = 'Pokemon';
-      } else if (categoriaApi.includes('trainer') || categoriaApi.includes('treinador')) {
-        categoriaDefinitiva = 'Trainer';
-      } else if (categoriaApi.includes('energy') || categoriaApi.includes('energia')) {
-        categoriaDefinitiva = 'Energy';
+        setResults(cartasOrdenadas);
+        setPaginaAtual(1);
+      } else {
+        setResults([]);
       }
       
-      novaCarta.category = categoriaDefinitiva;
+      if(res.data?.length === 0) toast('Nenhuma carta encontrada com esses filtros.', { icon: '🔍' });
 
-      await db.decks.update(Number(idDeckAlvo), {
-        cartas: [...deckAtual.cartas, novaCarta]
-      });
-
-      toast.success(`${carta.name} adicionado ao deck!`, { id: toastId });
-
-    } catch (erro) {
-      console.error("Erro ao adicionar carta:", erro);
-      toast.error("Não foi possível salvar a carta no deck.");
+    } catch (err) {
+      console.error("❌ ERRO NA BUSCA:", err);
+      toast.error('Erro na conexão com a base de dados!');
+      setResults([]);
+    } finally {
+      setLoading(false);
     }
   };
+
+  const handleSaveClick = async (cartaResumo) => {
+    if (deckFixoId) return efetivarSalvamento(cartaResumo, deckFixoId, 'deck');
+    if (colecaoFixaId) return efetivarSalvamento(cartaResumo, colecaoFixaId, 'colecao');
+
+    const decksNoBanco = await db.decks.toArray();
+    const colecoesNoBanco = await db.colecoes.toArray();
+    
+    setListaDecks(decksNoBanco);
+    setListaColecoes(colecoesNoBanco);
+    setCartaParaSalvar(cartaResumo);
+    
+    if (decksNoBanco.length === 0 && colecoesNoBanco.length > 0) setAbaModal('colecoes');
+    else setAbaModal('decks');
+    
+    setModalAberto(true);
+  };
+
+  const efetivarSalvamento = async (cartaResumo, destinoId, tipo = 'deck') => {
+    setModalAberto(false);
+    if (loadingCardsRef.current.has(cartaResumo.id)) return;
+    
+    loadingCardsRef.current.add(cartaResumo.id);
+    const toastId = toast.loading(`Salvando ${cartaResumo.name}...`);
+    
+    try {
+      const detalhes = await getCardDetail(cartaResumo.id);
+      const cartaCompleta = slimCard(detalhes);
+      
+      const categoryApi = String(detalhes.category || '').toLowerCase();
+      cartaCompleta.category = categoryApi.includes('pokemon') ? 'Pokemon' : categoryApi.includes('trainer') || categoryApi.includes('treinador') ? 'Trainer' : 'Energy';
+
+      if (tipo === 'deck') {
+        if (destinoId === 'novo') {
+          await db.decks.add({ nome: 'Meu Primeiro Deck', cartas: [cartaCompleta] });
+          toast.success(`${cartaCompleta.name} salvo no novo deck!`, { id: toastId });
+        } else {
+          const deckAtual = await db.decks.get(destinoId);
+          if (deckAtual.cartas.length >= 60) {
+            toast.error(`O deck "${deckAtual.nome}" já tem 60 cartas!`, { id: toastId });
+          } else {
+            await db.decks.update(destinoId, { cartas: [...deckAtual.cartas, cartaCompleta] });
+            toast.success(`${cartaCompleta.name} adicionado ao deck!`, { id: toastId });
+          }
+        }
+      } 
+      else if (tipo === 'colecao') {
+        if (destinoId === 'novo') {
+          await db.colecoes.add({ nome: 'Minha Primeira Coleção', cartas: [cartaCompleta] });
+          toast.success(`${cartaCompleta.name} salvo na nova coleção!`, { id: toastId });
+        } else {
+          const colAtual = await db.colecoes.get(destinoId);
+          await db.colecoes.update(destinoId, { cartas: [...colAtual.cartas, cartaCompleta] });
+          toast.success(`${cartaCompleta.name} adicionado à coleção!`, { id: toastId });
+        }
+      }
+    } catch (err) {
+      toast.error(`Falha ao salvar a carta.`, { id: toastId });
+    } finally {
+      loadingCardsRef.current.delete(cartaResumo.id);
+    }
+  };
+
+  const indexUltimaCarta = paginaAtual * CARTAS_POR_PAGINA;
+  const indexPrimeiraCarta = indexUltimaCarta - CARTAS_POR_PAGINA;
+  const cartasAtuais = results.slice(indexPrimeiraCarta, indexUltimaCarta);
+  const totalPaginas = Math.ceil(results.length / CARTAS_POR_PAGINA);
 
   return (
-    <div className="animate-in fade-in duration-300">
+    <div className="animate-in fade-in zoom-in-95 duration-500 relative">
       
-      <div className="bg-slate-900 p-6 rounded-2xl shadow-lg border border-slate-800 mb-8 relative z-20">
-        <h2 className="text-2xl font-bold text-slate-100 mb-6 flex items-center">
-          <Sparkles className="mr-2 text-blue-400" size={24}/>
-          Central de Cartas
-        </h2>
-        
-        <div className="flex flex-col md:flex-row gap-4 items-end">
-          <form onSubmit={pesquisarCartas} className="flex-1 flex gap-3 w-full">
-            <div className="relative flex-1">
-              <div className="absolute left-4 top-1/2 -translate-y-1/2 flex items-center pointer-events-none">
-                <Search className="h-5 w-5 text-slate-500" />
-              </div>
-              <input 
-                type="text" 
-                value={busca} 
-                onChange={(e) => setBusca(e.target.value)} 
-                placeholder="Ex: Pikachu, Charizard, Boss's Orders..."
-                className="w-full h-12 pl-12 pr-4 bg-slate-950 border border-slate-700 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition-all text-slate-200 placeholder-slate-500 text-base shadow-inner"
-              />
-            </div>
-            <button 
-              type="submit" 
-              disabled={carregando}
-              className="h-12 bg-blue-600 hover:bg-blue-500 text-white px-8 rounded-lg font-medium transition-colors shadow-md disabled:opacity-50 flex-shrink-0"
-            >
-              {carregando ? 'Buscando...' : 'Pesquisar'}
-            </button>
-          </form>
-
-          <div className="hidden md:block h-12 border-l border-slate-700 mx-2"></div>
-
-          {/* NOSSO SELECT PREMIUM CUSTOMIZADO */}
-          <div className="relative w-full md:w-64 flex-shrink-0 z-50">
-            <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1.5">Deck de Destino</label>
-            
-            {/* O "Botão" que simula o Select */}
-            <div 
-              onClick={() => setDropdownAberto(!dropdownAberto)}
-              className="w-full h-12 bg-slate-950 border border-slate-700 text-slate-200 rounded-lg px-4 flex items-center justify-between cursor-pointer hover:border-slate-500 hover:bg-slate-900 transition-all shadow-inner"
-            >
-              <span className="truncate font-medium">
-                {deckSelecionado 
-                  ? decks?.find(d => d.id.toString() === deckSelecionado)?.nome 
-                  : "-- Selecione um deck --"}
-              </span>
-              <ChevronDown size={18} className={`text-slate-400 transition-transform duration-300 ${dropdownAberto ? 'rotate-180' : ''}`} />
-            </div>
-
-            {/* O Menu que "cai" para baixo (Dropdown) */}
-            {dropdownAberto && (
-              <>
-                {/* Tela invisível que cobre tudo. Se clicar fora, fecha o menu. */}
-                <div className="fixed inset-0 z-40" onClick={() => setDropdownAberto(false)}></div>
-                
-                <div className="absolute top-full left-0 right-0 mt-2 bg-slate-900 border border-slate-700 rounded-xl shadow-2xl z-50 overflow-hidden flex flex-col py-2 animate-in fade-in slide-in-from-top-2 duration-200">
-                  
-                  <div 
-                    onClick={() => lidarComMudancaDeDeck('')}
-                    className="px-4 py-3 hover:bg-slate-800 text-slate-400 cursor-pointer transition-colors text-sm"
-                  >
-                    -- Selecione um deck --
-                  </div>
-
-                  <div 
-                    onClick={() => lidarComMudancaDeDeck('CRIAR_NOVO')}
-                    className="px-4 py-3 hover:bg-slate-800 text-emerald-400 font-bold cursor-pointer transition-colors text-sm flex items-center group"
-                  >
-                    <Sparkles size={16} className="mr-2 opacity-70 group-hover:opacity-100" />
-                    Criar Novo Deck...
-                  </div>
-
-                  {decks && decks.length > 0 && (
-                    <div className="h-px bg-slate-800 my-1 mx-4"></div>
-                  )}
-
-                  <div className="max-h-48 overflow-y-auto custom-scrollbar">
-                    {decks?.map(deck => (
-                      <div 
-                        key={deck.id}
-                        onClick={() => lidarComMudancaDeDeck(deck.id.toString())}
-                        className={`px-4 py-3 hover:bg-slate-800 cursor-pointer transition-colors text-sm flex justify-between items-center group
-                          ${deckSelecionado === deck.id.toString() ? 'bg-slate-800/60 text-blue-400 border-l-2 border-blue-400' : 'text-slate-200 border-l-2 border-transparent'}`}
-                      >
-                        <span className="truncate font-medium">{deck.nome}</span>
-                        <span className={`text-xs ml-2 shrink-0 ${deckSelecionado === deck.id.toString() ? 'text-blue-400' : 'text-slate-500 group-hover:text-slate-400'}`}>
-                          ({deck.cartas?.length || 0}/60)
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-
-                </div>
-              </>
-            )}
+      {!deckFixoId && !colecaoFixaId && (
+        <div className="text-center mb-8">
+          <div className="inline-flex items-center justify-center p-3 bg-blue-500/10 rounded-full mb-4 border border-blue-500/20">
+            <Search size={28} className="text-blue-500" />
           </div>
-
-        </div>
-      </div>
-
-      {/* NOVO ESTADO VAZIO DA BUSCA (Bem mais limpo!) */}
-      {!buscaRealizada && !carregando && (
-        <div className="flex flex-col items-center justify-center py-24 opacity-60">
-          <Search size={64} className="text-slate-700 mb-4" />
-          <h3 className="text-xl font-bold text-slate-500 mb-2">Pronto para a caçada?</h3>
-          <p className="text-slate-600">Digite o nome de uma carta ali em cima para buscar no banco de dados.</p>
+          <h1 className="text-4xl font-black text-slate-100 tracking-tight drop-shadow-md">
+            Banco de Cartas
+          </h1>
+          <p className="text-slate-400 mt-2 font-medium">
+            Busque por nome, tipo de mecânica ou pontos de vida.
+          </p>
         </div>
       )}
 
-      {carregando && (
-        <div className="flex flex-col items-center justify-center py-20">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500 mb-4"></div>
-          <p className="text-slate-400 font-medium">Vasculhando o banco de dados...</p>
-        </div>
-      )}
-
-      {!carregando && cartas.length > 0 && (
-        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-5">
-          {cartas.map((carta) => (
-            <div key={carta.id} className="bg-slate-900 rounded-xl shadow-lg hover:shadow-2xl hover:-translate-y-1 transition-all duration-300 border border-slate-800 overflow-hidden flex flex-col group relative">
-              <button 
-                onClick={() => adicionarAoDeck(carta)}
-                className="absolute top-2 right-2 bg-emerald-500 hover:bg-emerald-400 text-white p-2.5 rounded-full shadow-lg transition-all z-10 opacity-100 md:opacity-0 md:group-hover:opacity-100 active:scale-95"
-                title="Adicionar ao Deck"
-              >
-                <PlusCircle size={22} />
-              </button>
-
-              <div className="p-3 bg-slate-950/50 flex justify-center items-center h-64 relative">
-                {carta.image ? (
-                  <img 
-                    src={cardImageUrl(carta.image)} 
-                    alt={carta.name} 
-                    className="max-h-full rounded-md drop-shadow-lg group-hover:scale-105 transition-transform duration-300" 
-                  />
-                ) : (
-                  <div className="flex flex-col items-center text-slate-600">
-                    <AlertCircle size={32} className="mb-2 opacity-30" />
-                    <span className="text-sm font-medium">Sem Imagem</span>
-                  </div>
-                )}
-              </div>
-              
-              <div className="p-3 border-t border-slate-800 text-center flex-grow bg-slate-900">
-                <p className="font-bold text-slate-200 text-sm truncate" title={carta.name}>{carta.name}</p>
-                <p className="text-xs text-slate-500 mt-1 uppercase tracking-wider font-medium">{carta.id}</p>
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-      {/* MODAL DE CRIAR DECK DA BUSCA */}
-      {modalCriarAberto && (
-        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-[100] flex items-center justify-center p-4 animate-in fade-in duration-200">
-          <div className="bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl w-full max-w-md p-6 animate-in zoom-in-95 duration-200">
-            <div className="flex justify-between items-center mb-6">
-              <h3 className="text-xl font-bold text-slate-100 flex items-center"><Layers className="mr-2 text-emerald-500"/> Criar Novo Deck</h3>
-              <button onClick={() => setModalCriarAberto(false)} className="text-slate-500 hover:text-slate-300 transition-colors"><X size={24}/></button>
+      {/* 1. MUDANÇA: Barra de busca e filtros mais largar no PC */}
+      <div className="w-full max-w-[1400px] mx-auto px-4 md:px-8 mb-10">
+        <form onSubmit={handleSearch} className="bg-slate-900 border border-slate-800 rounded-2xl shadow-xl overflow-hidden transition-all duration-300 hover:shadow-blue-900/10 hover:border-slate-700 focus-within:border-blue-500 focus-within:ring-4 focus-within:ring-blue-500/10 max-w-4xl mx-auto">
+          
+          <div className="relative flex items-center">
+            <div className="absolute left-6 text-slate-400 pointer-events-none">
+              <Search size={22} />
             </div>
             
-            <label className="block text-sm font-semibold text-slate-400 mb-2">Nome do Deck</label>
             <input
-              autoFocus
               type="text"
-              placeholder="Ex: Charizard ex, Deck de Fogo..."
-              value={nomeNovoDeck}
-              onChange={(e) => setNomeNovoDeck(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && confirmarCriacaoDeck()}
-              className="w-full bg-slate-950 border border-slate-700 text-slate-200 rounded-lg px-4 py-3 focus:ring-2 focus:ring-emerald-500 outline-none mb-8 placeholder-slate-600"
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              placeholder="Ex: Ralts, Charizard, Professor..."
+              className="w-full h-16 pl-14 pr-4 bg-transparent outline-none text-slate-100 text-lg placeholder-slate-500 font-medium"
+              autoFocus={!deckFixoId && !colecaoFixaId}
             />
             
-            <div className="flex justify-end gap-3">
-              <button onClick={() => setModalCriarAberto(false)} className="px-5 py-2.5 rounded-lg font-medium text-slate-400 hover:bg-slate-800 transition-colors">Cancelar</button>
-              <button onClick={confirmarCriacaoDeck} className="px-5 py-2.5 rounded-lg font-bold bg-emerald-600 hover:bg-emerald-500 text-white transition-colors">Salvar Deck</button>
+            <button 
+              type="button"
+              onClick={() => setMostrarFiltros(!mostrarFiltros)}
+              className={`mr-2 flex items-center px-4 py-2 rounded-xl text-sm font-bold transition-colors ${mostrarFiltros ? 'bg-blue-600 text-white' : 'bg-slate-800 text-slate-300 hover:bg-slate-700'}`}
+              title="Filtros Avançados"
+            >
+              <SlidersHorizontal size={18} className="mr-2" />
+              <span className="hidden sm:inline">Filtros</span>
+            </button>
+
+            <button
+              type="submit"
+              disabled={loading}
+              className="h-16 px-8 bg-blue-600 hover:bg-blue-500 text-white font-black text-lg transition-colors flex items-center disabled:opacity-50"
+            >
+              {loading ? <Loader2 size={24} className="animate-spin" /> : 'Buscar'}
+            </button>
+          </div>
+
+          {mostrarFiltros && (
+            <div className="bg-slate-950 p-6 border-t border-slate-800 grid grid-cols-1 md:grid-cols-2 gap-6 animate-in slide-in-from-top-4 duration-300">
+              <div className="space-y-2">
+                <label className="text-xs font-bold text-slate-400 uppercase tracking-wider flex items-center">
+                  <Zap size={14} className="mr-1.5 text-yellow-400" /> Versão / Mecânica
+                </label>
+                <div className="relative">
+                  <select 
+                    value={filtroSubtipo}
+                    onChange={(e) => setFiltroSubtipo(e.target.value)}
+                    className="w-full h-12 px-4 bg-slate-900 border border-slate-700 rounded-xl appearance-none outline-none focus:ring-2 focus:ring-blue-500 text-slate-200 font-medium cursor-pointer"
+                  >
+                    <optgroup label="Geral">
+                      {subtiposPokemon.slice(0, 4).map(sub => (
+                        <option key={sub.valor} value={sub.valor}>{sub.label}</option>
+                      ))}
+                    </optgroup>
+                    <optgroup label="Mecânicas Especiais (Pokémon)">
+                      {subtiposPokemon.slice(4).map(sub => (
+                        <option key={sub.valor} value={sub.valor}>{sub.label}</option>
+                      ))}
+                    </optgroup>
+                    <optgroup label="Cartas de Treinador">
+                      {subtiposTreinador.map(sub => (
+                        <option key={sub.valor} value={sub.valor}>{sub.label}</option>
+                      ))}
+                    </optgroup>
+                  </select>
+                  <ChevronDown size={18} className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-500 pointer-events-none" />
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <label className="text-xs font-bold text-slate-400 uppercase tracking-wider flex items-center">
+                  <Heart size={14} className="mr-1.5 text-red-400" /> Pontos de Vida (HP exato)
+                </label>
+                <input 
+                  type="number"
+                  placeholder="Ex: 70"
+                  value={filtroHP}
+                  onChange={(e) => setFiltroHP(e.target.value)}
+                  step="10"
+                  min="30"
+                  max="340"
+                  className="w-full h-12 px-4 bg-slate-900 border border-slate-700 rounded-xl outline-none focus:ring-2 focus:ring-blue-500 text-slate-200 font-medium placeholder-slate-600"
+                />
+              </div>
+
+              <div className="md:col-span-2 flex justify-end">
+                <button 
+                  type="button" 
+                  onClick={() => { setFiltroSubtipo(''); setFiltroHP(''); }}
+                  className="text-sm font-bold text-slate-500 hover:text-red-400 transition-colors"
+                >
+                  Limpar Filtros
+                </button>
+              </div>
+            </div>
+          )}
+        </form>
+      </div>
+
+      {results.length > 0 ? (
+        // 2. MUDANÇA: Grid das Cartas se espalha muito mais!
+        <div className="w-full max-w-[1400px] mx-auto px-4 md:px-8 mb-12">
+          <div className="flex justify-between items-end mb-4 px-2 border-b border-slate-800 pb-2">
+             <p className="text-slate-400 font-medium text-sm">
+                Encontradas <span className="text-white font-bold">{results.length}</span> cartas
+             </p>
+          </div>
+
+          {/* GRID NOVO: Até 7 colunas em telas gigantes */}
+          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 2xl:grid-cols-7 gap-4 md:gap-6">
+            {cartasAtuais.map((card) => (
+              <div key={card.id} className="group relative bg-slate-900 rounded-2xl border border-slate-800 p-3 flex flex-col justify-between hover:border-blue-500/50 hover:shadow-xl hover:-translate-y-1 hover:shadow-blue-900/20 transition-all duration-300 overflow-hidden">
+                
+                <div className="aspect-[63/88] w-full rounded-xl overflow-hidden bg-slate-950 flex items-center justify-center relative shadow-inner mb-3">
+                  {card.image ? (
+                    <img src={cardImageUrl(card.image)} alt={card.name} className="w-full h-full object-contain p-1 transition-transform duration-500 group-hover:scale-105" loading="lazy" />
+                  ) : (
+                    <div className="text-slate-600 font-medium text-xs text-center px-2">Sem Imagem</div>
+                  )}
+                  
+                  <div className="absolute inset-x-0 bottom-0 p-3 opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity duration-300 bg-gradient-to-t from-slate-950 via-slate-900/90 to-transparent">
+                    <button onClick={() => handleSaveClick(card)} className="w-full py-2.5 bg-blue-600 hover:bg-blue-500 text-white font-bold rounded-lg shadow-lg active:scale-95 transition-all flex items-center justify-center">
+                      <Sparkles size={16} className="mr-2" /> Salvar
+                    </button>
+                  </div>
+                </div>
+
+                <div className="text-center px-1">
+                  <h3 className="font-bold text-slate-200 text-sm truncate" title={card.name}>{card.name}</h3>
+                  <div className="flex items-center justify-center space-x-2 mt-1">
+                    <span className="text-xs font-mono text-slate-500 bg-slate-800 px-2 py-0.5 rounded-md uppercase tracking-wider">{card.id}</span>
+                    {card.hp && (
+                       <span className="text-xs font-bold text-red-400 bg-red-500/10 border border-red-500/20 px-2 py-0.5 rounded-md flex items-center">
+                          <Heart size={10} className="mr-1" /> {card.hp}
+                       </span>
+                    )}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          {totalPaginas > 1 && (
+            <div className="flex items-center justify-center space-x-4 mt-12 bg-slate-900 p-3 rounded-2xl border border-slate-800 w-max mx-auto shadow-lg">
+              <button 
+                onClick={() => setPaginaAtual(p => Math.max(1, p - 1))} 
+                disabled={paginaAtual === 1}
+                className="p-2 rounded-xl bg-slate-800 text-slate-300 hover:bg-blue-600 hover:text-white disabled:opacity-30 disabled:hover:bg-slate-800 disabled:hover:text-slate-300 transition-all"
+              >
+                <ChevronLeft size={24} />
+              </button>
+              
+              <span className="text-sm font-bold text-slate-400 min-w-[100px] text-center">
+                Página <span className="text-white">{paginaAtual}</span> de {totalPaginas}
+              </span>
+              
+              <button 
+                onClick={() => setPaginaAtual(p => Math.min(totalPaginas, p + 1))} 
+                disabled={paginaAtual === totalPaginas}
+                className="p-2 rounded-xl bg-slate-800 text-slate-300 hover:bg-blue-600 hover:text-white disabled:opacity-30 disabled:hover:bg-slate-800 disabled:hover:text-slate-300 transition-all"
+              >
+                <ChevronRight size={24} />
+              </button>
+            </div>
+          )}
+
+        </div>
+      ) : (
+        hasSearched && !loading && (
+          <div className="text-center py-20 animate-in fade-in">
+            <div className="bg-slate-900 w-24 h-24 rounded-full flex items-center justify-center mx-auto mb-6 shadow-inner border border-slate-800">
+              <Search size={40} className="text-slate-600" />
+            </div>
+            <h3 className="text-2xl font-bold text-slate-300 mb-2">Nada encontrado</h3>
+            <p className="text-slate-500 max-w-md mx-auto">
+              Verifique a grafia do nome ou veja se os filtros aplicados combinam.
+            </p>
+          </div>
+        )
+      )}
+
+      {/* === MODAL DUPLO DE SALVAMENTO === */}
+      {modalAberto && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/80 backdrop-blur-sm p-4 animate-in fade-in duration-200">
+          <div className="bg-slate-900 border border-slate-700 rounded-3xl w-full max-w-md p-6 shadow-2xl relative">
+            <div className="flex justify-between items-center mb-6">
+              <h3 className="text-2xl font-black text-white flex items-center">
+                <BookmarkPlus className="mr-2 text-blue-500" /> Salvar Carta
+              </h3>
+              <button onClick={() => setModalAberto(false)} className="text-slate-400 hover:text-white transition-colors bg-slate-800 hover:bg-slate-700 p-2 rounded-full">
+                <X size={20} />
+              </button>
+            </div>
+            
+            <p className="text-slate-400 text-sm mb-4">Onde você deseja salvar a carta <strong className="text-slate-200">{cartaParaSalvar?.name}</strong>?</p>
+            
+            {/* ABAS */}
+            <div className="flex gap-2 mb-4 bg-slate-950 p-1 rounded-xl border border-slate-800">
+              <button 
+                onClick={() => setAbaModal('decks')} 
+                className={`flex-1 py-2 rounded-lg font-bold transition-all text-sm flex items-center justify-center ${abaModal === 'decks' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-500 hover:text-slate-300 hover:bg-slate-800/50'}`}
+              >
+                <Layers size={16} className="mr-2" /> Decks
+              </button>
+              <button 
+                onClick={() => setAbaModal('colecoes')} 
+                className={`flex-1 py-2 rounded-lg font-bold transition-all text-sm flex items-center justify-center ${abaModal === 'colecoes' ? 'bg-emerald-600 text-white shadow-md' : 'text-slate-500 hover:text-slate-300 hover:bg-slate-800/50'}`}
+              >
+                <BookOpen size={16} className="mr-2" /> Coleções
+              </button>
+            </div>
+
+            {/* LISTAGENS */}
+            <div className="space-y-3 max-h-[50vh] overflow-y-auto pr-2 custom-scrollbar">
+              
+              {/* ABA: DECKS */}
+              {abaModal === 'decks' && (
+                <>
+                  {listaDecks.map(deck => (
+                    <button 
+                      key={deck.id} 
+                      onClick={() => efetivarSalvamento(cartaParaSalvar, deck.id, 'deck')} 
+                      className="w-full flex items-center justify-between p-4 rounded-xl border border-slate-700 bg-slate-800 hover:bg-slate-700 hover:border-blue-500 transition-all text-left group"
+                    >
+                      <span className="font-bold text-slate-200 group-hover:text-blue-400">{deck.nome}</span>
+                      <span className={`text-xs font-mono px-2 py-1 rounded-md ${deck.cartas.length >= 60 ? 'bg-red-500/20 text-red-400' : 'bg-slate-950 text-slate-400'}`}>
+                        {deck.cartas.length}/60
+                      </span>
+                    </button>
+                  ))}
+                  <div className="my-4 border-t border-slate-800"></div>
+                  <button onClick={() => efetivarSalvamento(cartaParaSalvar, 'novo', 'deck')} className="w-full flex items-center justify-center p-4 rounded-xl border border-dashed border-blue-500/50 bg-blue-500/10 text-blue-400 hover:bg-blue-500 hover:text-white font-bold transition-all">
+                    + Criar um Deck Novo
+                  </button>
+                </>
+              )}
+
+              {/* ABA: COLEÇÕES */}
+              {abaModal === 'colecoes' && (
+                <>
+                  {listaColecoes.map(col => (
+                    <button 
+                      key={col.id} 
+                      onClick={() => efetivarSalvamento(cartaParaSalvar, col.id, 'colecao')} 
+                      className="w-full flex items-center justify-between p-4 rounded-xl border border-slate-700 bg-slate-800 hover:bg-slate-700 hover:border-emerald-500 transition-all text-left group"
+                    >
+                      <span className="font-bold text-slate-200 group-hover:text-emerald-400">{col.nome}</span>
+                      <span className="text-xs font-mono px-2 py-1 rounded-md bg-slate-950 text-emerald-500">
+                        {col.cartas.length} cartas
+                      </span>
+                    </button>
+                  ))}
+                  <div className="my-4 border-t border-slate-800"></div>
+                  <button onClick={() => efetivarSalvamento(cartaParaSalvar, 'novo', 'colecao')} className="w-full flex items-center justify-center p-4 rounded-xl border border-dashed border-emerald-500/50 bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500 hover:text-white font-bold transition-all">
+                    + Criar Coleção Nova
+                  </button>
+                </>
+              )}
+
             </div>
           </div>
         </div>
       )}
 
-      {/* Estilo para a barra de rolagem da lista de decks */}
-      <style dangerouslySetInnerHTML={{__html: `
-        .custom-scrollbar::-webkit-scrollbar { width: 6px; }
-        .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
-        .custom-scrollbar::-webkit-scrollbar-thumb { background: #334155; border-radius: 4px; }
-        .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: #475569; }
-      `}} />
     </div>
   );
 }

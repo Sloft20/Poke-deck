@@ -37,29 +37,54 @@ export function cardImageUrl(image, quality = ASSET_QUALITY, ext = ASSET_EXT) {
  * Busca cartas por nome. Retorna objetos "brief" (id, nome, imagem) —
  * dados completos (categoria, estágio etc.) são buscados sob demanda.
  */
-export async function searchCards(name, category) {
-  const params = new URLSearchParams({
-    name: `like:${name}`,
-    "sort:field": "name",
-    "pagination:itemsPerPage": "48",
-  });
-  if (category) params.set("category", `eq:${category}`);
-  const url = `${API_BASE}/${LANG}/cards?${params.toString()}`;
-  const cache = readCache(SEARCH_CACHE_KEY);
-
+export const searchCards = async (filtros) => {
   try {
-    const res = await fetch(url);
-    if (!res.ok) throw new Error(`Erro na API: ${res.status}`);
-    const data = await res.json();
-    cache[url] = { data, ts: Date.now() };
-    writeCache(SEARCH_CACHE_KEY, cache, MAX_CACHED_SEARCHES);
-    return { data, fromCache: false };
-  } catch (err) {
-    const cached = cache[url];
-    if (cached) return { data: cached.data, fromCache: true };
-    throw err;
+    let url = `${API_BASE}/${LANG}/cards`;
+    let params = new URLSearchParams();
+
+    // Se a busca vier como string simples
+    if (typeof filtros === 'string') {
+      params.append('name', filtros);
+    } else {
+      // Se vier do nosso painel de Filtros Avançados
+      if (filtros.nome) params.append('name', filtros.nome);
+      if (filtros.hp) params.append('hp', filtros.hp);
+
+      if (filtros.subtipo) {
+        const treinadores = ['Supporter', 'Item', 'Stadium', 'Pokémon Tool'];
+        const estagios = ['Basic', 'Stage 1', 'Stage 2'];
+        
+        if (filtros.subtipo === 'ACE SPEC Rare') {
+          // MÁGICA: Redireciona a busca para o campo de Raridade exclusivo do TCGDex
+          params.append('rarity', 'ACE SPEC Rare');
+        } else if (treinadores.includes(filtros.subtipo)) {
+          params.append('category', 'Trainer');
+          params.append('trainerType', filtros.subtipo);
+        } else if (estagios.includes(filtros.subtipo)) {
+          params.append('stage', filtros.subtipo);
+        } else {
+          // V, VMAX, EX ficam no "suffix" no TCGdex
+          params.append('suffix', filtros.subtipo); 
+        }
+      }
+    }
+
+    const queryString = params.toString();
+    if (queryString) url += `?${queryString}`;
+
+    const response = await fetch(url);
+    if (!response.ok) throw new Error(`Erro na API TCGdex: ${response.status}`);
+    
+    // O TCGdex devolve uma array direto. Envolvemos em { data } 
+    // para não quebrar o código do React que já estava pronto.
+    const data = await response.json();
+    return { data: data }; 
+    
+  } catch (error) {
+    console.error("Erro na pokeApi (TCGDex):", error);
+    return { data: [] };
   }
-}
+};
 
 /**
  * Busca os dados completos de uma carta (categoria, estágio, tipo de

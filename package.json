@@ -10,6 +10,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.110.8",
     "@tcgdex/sdk": "^2.9.0",
     "dexie": "^4.4.4",
     "dexie-react-hooks": "^4.4.0",

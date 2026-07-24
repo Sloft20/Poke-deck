@@ -1,10 +1,10 @@
 import Dexie from 'dexie';
 
-// Cria o banco de dados chamado "PokemonDeckDB"
-export const db = new Dexie('PokemonDeckDB');
+export const db = new Dexie('PokeDeckDB');
 
-// Define as tabelas (stores). 
-// O '++id' significa que o ID do deck será gerado automaticamente.
-db.version(1).stores({
-  decks: '++id, nome, dataCriacao' // O Dexie salva as cartas dentro do objeto do deck automaticamente
+// Mude a versão de 1 para 2 (ou o número seguinte ao que estiver aí)
+// E adicione a linha da tabela de colecoes
+db.version(2).stores({
+  decks: '++id, nome',
+  colecoes: '++id, nome' // <-- Nova tabela para os colecionadores!
 });
